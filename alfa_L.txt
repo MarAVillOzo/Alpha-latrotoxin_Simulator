@@ -1,0 +1,1514 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Aug 15 17:40:19 2026
+
+@author: macbook
+"""
+
+import csv, math, tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import numpy as np
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+
+
+class mainlab:
+    """MainLab V0.1 - simulador sinaptico mesoscopico de una sola clase."""
+
+    def __init__(self, root):
+        self.root = root
+        root.title("MainLab V0.1 - Neurochemical Virtual Laboratory")
+        root.geometry("1450x880")
+        root.minsize(1150, 720)
+
+        # Motor
+        self.dt, self.running, self.t = 0.01, False, 0.0
+        self.rng = np.random.default_rng(42)
+        self.ca, self.nt, self.epsp = 0.08, 0.0, 0.0
+        self.ves, self.release, self.pr = 200.0, 0.0, 0.0
+        self.total_release, self.instability = 0.0, 0.0
+
+        self.H = {
+            k: [] for k in [
+                "t", "ca", "nt", "epsp",
+                "release", "ves", "ltx", "instability"
+            ]
+        }
+
+        # Parametros
+        self.stim = tk.DoubleVar(value=10.0)
+        self.ca_ext = tk.DoubleVar(value=2.0)
+        self.cav = tk.DoubleVar(value=1.0)
+        self.ltx = tk.DoubleVar(value=0.0)
+        self.exo = tk.DoubleVar(value=1.0)
+        self.pool = tk.DoubleVar(value=200.0)
+        self.recycle = tk.DoubleVar(value=4.0)
+        self.speed = tk.DoubleVar(value=1.0)
+        self.preset = tk.StringVar(value="Basal")
+
+        # Geometria visual de vesiculas (um)
+        n = 100
+        ang = self.rng.uniform(0, 2*np.pi, n)
+        rad = 0.38*np.sqrt(self.rng.random(n))
+
+        self.vx = rad*np.cos(ang)
+        self.vy = rad*np.sin(ang)
+        self.vz = self.rng.uniform(0.035, 0.25, n)
+
+        self.build_ui()
+        self.build_plot()
+        self.reset()
+
+        root.after(50, self.loop)
+
+    # ============================================================
+    # INTERFAZ
+    # ============================================================
+
+    def build_ui(self):
+
+        main = ttk.Frame(self.root, padding=8)
+        main.pack(fill="both", expand=True)
+
+        self.left = ttk.Frame(main, width=320)
+        self.left.pack(
+            side="left",
+            fill="y",
+            padx=(0, 8)
+        )
+        self.left.pack_propagate(False)
+
+        self.right = ttk.Frame(main)
+        self.right.pack(
+            side="left",
+            fill="both",
+            expand=True
+        )
+
+        ttk.Label(
+            self.left,
+            text="MAINLAB V0.1",
+            font=("Helvetica", 18, "bold")
+        ).pack(anchor="w")
+
+        ttk.Label(
+            self.left,
+            text="Neurochemical Virtual Laboratory"
+        ).pack(anchor="w", pady=(0, 8))
+
+        # --------------------------------------------------------
+        # EXPERIMENTOS
+        # --------------------------------------------------------
+
+        exp = ttk.LabelFrame(
+            self.left,
+            text="Experimento",
+            padding=8
+        )
+        exp.pack(fill="x", pady=4)
+
+        c = ttk.Combobox(
+            exp,
+            textvariable=self.preset,
+            state="readonly",
+            values=[
+                "Basal",
+                "Estimulo 25 Hz",
+                "alpha-LTX moderada",
+                "alpha-LTX intensa",
+                "Washout"
+            ]
+        )
+
+        c.pack(fill="x")
+
+        c.bind(
+            "<<ComboboxSelected>>",
+            lambda e: self.apply_preset()
+        )
+
+        # --------------------------------------------------------
+        # PARAMETROS
+        # --------------------------------------------------------
+
+        box = ttk.LabelFrame(
+            self.left,
+            text="Parametros",
+            padding=8
+        )
+
+        box.pack(fill="x", pady=4)
+
+        self.add_slider(
+            box,
+            "Estimulo (Hz)",
+            self.stim,
+            0,
+            60
+        )
+
+        self.add_slider(
+            box,
+            "Ca2+ externo (mM)",
+            self.ca_ext,
+            0.1,
+            4
+        )
+
+        self.add_slider(
+            box,
+            "Ganancia CaV",
+            self.cav,
+            0,
+            3
+        )
+
+        self.add_slider(
+            box,
+            "alpha-LTX virtual",
+            self.ltx,
+            0,
+            1
+        )
+
+        self.add_slider(
+            box,
+            "Sensibilidad exocitica",
+            self.exo,
+            0.25,
+            3
+        )
+
+        self.add_slider(
+            box,
+            "Pool vesicular",
+            self.pool,
+            40,
+            500
+        )
+
+        self.add_slider(
+            box,
+            "Tau reciclaje (s)",
+            self.recycle,
+            0.5,
+            12
+        )
+
+        self.add_slider(
+            box,
+            "Velocidad",
+            self.speed,
+            0.25,
+            5
+        )
+
+        # --------------------------------------------------------
+        # CONTROL
+        # --------------------------------------------------------
+
+        b = ttk.LabelFrame(
+            self.left,
+            text="Control",
+            padding=8
+        )
+
+        b.pack(fill="x", pady=4)
+
+        r = ttk.Frame(b)
+        r.pack(fill="x")
+
+        self.runbtn = ttk.Button(
+            r,
+            text="Iniciar",
+            command=self.toggle
+        )
+
+        self.runbtn.pack(
+            side="left",
+            fill="x",
+            expand=True,
+            padx=(0, 3)
+        )
+
+        ttk.Button(
+            r,
+            text="Reset",
+            command=self.reset
+        ).pack(
+            side="left",
+            fill="x",
+            expand=True
+        )
+
+        r = ttk.Frame(b)
+        r.pack(fill="x", pady=3)
+
+        ttk.Button(
+            r,
+            text="+ alpha-LTX",
+            command=self.inject
+        ).pack(
+            side="left",
+            fill="x",
+            expand=True,
+            padx=(0, 3)
+        )
+
+        ttk.Button(
+            r,
+            text="Washout",
+            command=self.washout
+        ).pack(
+            side="left",
+            fill="x",
+            expand=True
+        )
+
+        ttk.Button(
+            b,
+            text="Exportar CSV",
+            command=self.export_csv
+        ).pack(
+            fill="x",
+            pady=(3, 0)
+        )
+
+        # --------------------------------------------------------
+        # METRICAS
+        # --------------------------------------------------------
+
+        m = ttk.LabelFrame(
+            self.left,
+            text="Lecturas",
+            padding=8
+        )
+
+        m.pack(fill="x", pady=4)
+
+        self.metrics = {
+            k: tk.StringVar()
+            for k in [
+                "ca",
+                "pr",
+                "rr",
+                "nt",
+                "epsp",
+                "ves",
+                "total",
+                "idx"
+            ]
+        }
+
+        metricas = [
+            ("Ca2+ presinaptico", "ca"),
+            ("P liberacion", "pr"),
+            ("Liberacion", "rr"),
+            ("NT hendidura", "nt"),
+            ("Respuesta post", "epsp"),
+            ("Pool", "ves"),
+            ("Total liberado", "total"),
+            ("Inestabilidad*", "idx")
+        ]
+
+        for label, key in metricas:
+
+            q = ttk.Frame(m)
+            q.pack(fill="x")
+
+            ttk.Label(
+                q,
+                text=label
+            ).pack(side="left")
+
+            ttk.Label(
+                q,
+                textvariable=self.metrics[key],
+                font=("Menlo", 10, "bold")
+            ).pack(side="right")
+
+        # --------------------------------------------------------
+        # LOG
+        # --------------------------------------------------------
+
+        self.status = tk.Text(
+            self.left,
+            height=9,
+            font=("Menlo", 9),
+            wrap="word"
+        )
+
+        self.status.pack(
+            fill="both",
+            expand=True,
+            pady=4
+        )
+
+        self.log(
+            "Modelo fenomenologico: "
+            "parametros marcados con * no son "
+            "valores clinicamente validados."
+        )
+
+    def add_slider(
+        self,
+        parent,
+        text,
+        var,
+        a,
+        b
+    ):
+
+        f = ttk.Frame(parent)
+        f.pack(fill="x", pady=1)
+
+        top = ttk.Frame(f)
+        top.pack(fill="x")
+
+        ttk.Label(
+            top,
+            text=text
+        ).pack(side="left")
+
+        val = ttk.Label(
+            top,
+            width=7,
+            anchor="e"
+        )
+
+        val.pack(side="right")
+
+        ttk.Scale(
+            f,
+            variable=var,
+            from_=a,
+            to=b,
+            command=lambda x, L=val:
+                L.config(text=f"{float(x):.2f}")
+        ).pack(fill="x")
+
+        val.config(
+            text=f"{var.get():.2f}"
+        )
+
+    # ============================================================
+    # GRAFICOS
+    # ============================================================
+
+    def build_plot(self):
+
+        self.fig = Figure(
+            figsize=(10, 8),
+            dpi=100,
+            constrained_layout=True
+        )
+
+        gs = self.fig.add_gridspec(
+            2,
+            1,
+            height_ratios=[2.1, 1]
+        )
+
+        self.ax3 = self.fig.add_subplot(
+            gs[0],
+            projection="3d"
+        )
+
+        self.ax = self.fig.add_subplot(gs[1])
+        self.axr = self.ax.twinx()
+
+        canvas = FigureCanvasTkAgg(
+            self.fig,
+            master=self.right
+        )
+
+        self.canvas = canvas
+
+        canvas.get_tk_widget().pack(
+            fill="both",
+            expand=True
+        )
+
+        tb = NavigationToolbar2Tk(
+            canvas,
+            self.right,
+            pack_toolbar=False
+        )
+
+        tb.update()
+        tb.pack(fill="x")
+
+        # --------------------------------------------------------
+        # GEOMETRIA SINAPTICA
+        # --------------------------------------------------------
+
+        x = np.linspace(
+            -0.5,
+            0.5,
+            18
+        )
+
+        X, Y = np.meshgrid(x, x)
+
+        # Membrana presinaptica
+        self.ax3.plot_surface(
+            X,
+            Y,
+            np.zeros_like(X),
+            alpha=0.18,
+            linewidth=0
+        )
+
+        # Membrana postsinaptica
+        # 0.020 um = 20 nm
+        self.ax3.plot_surface(
+            X,
+            Y,
+            np.full_like(X, -0.020),
+            alpha=0.18,
+            linewidth=0
+        )
+
+        self.sves = self.ax3.scatter(
+            [],
+            [],
+            [],
+            s=28,
+            alpha=0.7,
+            label="Vesiculas"
+        )
+
+        self.sca = self.ax3.scatter(
+            [],
+            [],
+            [],
+            s=9,
+            alpha=0.7,
+            label="Ca2+"
+        )
+
+        self.snt = self.ax3.scatter(
+            [],
+            [],
+            [],
+            s=8,
+            alpha=0.65,
+            label="Neurotransmisor"
+        )
+
+        self.sltx = self.ax3.scatter(
+            [],
+            [],
+            [],
+            s=42,
+            marker="X",
+            alpha=0.9,
+            label="alpha-LTX"
+        )
+
+        self.ax3.set(
+            xlim=(-0.52, 0.52),
+            ylim=(-0.52, 0.52),
+            zlim=(-0.055, 0.28),
+            xlabel="X (um)",
+            ylabel="Y (um)",
+            zlabel="Z (um)"
+        )
+
+        self.ax3.set_title(
+            "Sinapsis 3D - "
+            "hendidura = 0.020 um (20 nm)"
+        )
+
+        self.ax3.set_box_aspect(
+            (1, 1, 0.55)
+        )
+
+        self.ax3.view_init(
+            20,
+            -55
+        )
+
+        self.ax3.legend(
+            fontsize=8
+        )
+
+        self.info = self.ax3.text2D(
+            0.02,
+            0.96,
+            "",
+            transform=self.ax3.transAxes,
+            va="top"
+        )
+
+        # --------------------------------------------------------
+        # SERIES TEMPORALES
+        # --------------------------------------------------------
+
+        self.lca, = self.ax.plot(
+            [],
+            [],
+            label="Ca2+ (uM)"
+        )
+
+        self.lnt, = self.ax.plot(
+            [],
+            [],
+            label="NT (uM*)"
+        )
+
+        self.lrr, = self.axr.plot(
+            [],
+            [],
+            "--",
+            label="Liberacion ves/s"
+        )
+
+        self.ax.set(
+            xlabel="Tiempo (s)",
+            ylabel="Concentracion",
+            xlim=(0, 30),
+            ylim=(0, 1)
+        )
+
+        self.ax.grid(
+            alpha=0.2
+        )
+
+        self.axr.set_ylabel(
+            "ves/s"
+        )
+
+        self.axr.set_ylim(
+            0,
+            30
+        )
+
+        lines = [
+            self.lca,
+            self.lnt,
+            self.lrr
+        ]
+
+        self.ax.legend(
+            lines,
+            [
+                x.get_label()
+                for x in lines
+            ],
+            loc="upper left",
+            fontsize=8
+        )
+
+    # ============================================================
+    # MOTOR BIOFISICO FENOMENOLOGICO
+    # ============================================================
+
+    def step(
+        self,
+        dt
+    ):
+
+        f = max(
+            0,
+            self.stim.get()
+        )
+
+        ce = max(
+            0.01,
+            self.ca_ext.get()
+        )
+
+        cav = max(
+            0,
+            self.cav.get()
+        )
+
+        l = float(
+            np.clip(
+                self.ltx.get(),
+                0,
+                1
+            )
+        )
+
+        ex = max(
+            0.05,
+            self.exo.get()
+        )
+
+        cap = max(
+            1,
+            self.pool.get()
+        )
+
+        tau = max(
+            0.1,
+            self.recycle.get()
+        )
+
+        # --------------------------------------------------------
+        # Ca2+
+        # --------------------------------------------------------
+        #
+        # Entrada evocada:
+        # canales de calcio dependientes de actividad
+        #
+        # Entrada persistente:
+        # efecto tipo poro de alpha-LTX virtual
+        #
+        # Aclaramiento:
+        # retorno hacia concentracion basal
+        #
+
+        influx = (
+            0.52 *
+            cav *
+            (ce / 2) *
+            (f / 20)
+            +
+            2.20 *
+            l *
+            (ce / 2)
+        )
+
+        self.ca = max(
+            0,
+            self.ca
+            +
+            (
+                influx
+                -
+                (self.ca - 0.08) / 0.24
+            )
+            *
+            dt
+        )
+
+        # --------------------------------------------------------
+        # LIBERACION VESICULAR
+        # --------------------------------------------------------
+
+        z = float(
+            np.clip(
+                -8 *
+                ex *
+                (self.ca - 0.22),
+                -60,
+                60
+            )
+        )
+
+        self.pr = (
+            1 /
+            (
+                1 +
+                math.exp(z)
+            )
+        )
+
+        wanted = (
+            f *
+            self.pr
+            +
+            24 *
+            l *
+            ex
+        )
+
+        self.release = min(
+            max(
+                0,
+                wanted
+            ),
+            self.ves /
+            max(
+                dt,
+                1e-9
+            )
+        )
+
+        # --------------------------------------------------------
+        # RECICLAJE DE VESICULAS
+        # --------------------------------------------------------
+
+        self.ves = float(
+            np.clip(
+                self.ves
+                +
+                (
+                    (
+                        cap -
+                        self.ves
+                    )
+                    /
+                    tau
+                    -
+                    self.release
+                )
+                *
+                dt,
+                0,
+                cap
+            )
+        )
+
+        self.total_release += (
+            self.release *
+            dt
+        )
+
+        # --------------------------------------------------------
+        # NEUROTRANSMISOR
+        # --------------------------------------------------------
+
+        self.nt = max(
+            0,
+            self.nt
+            +
+            (
+                0.12 *
+                self.release
+                -
+                self.nt /
+                0.12
+            )
+            *
+            dt
+        )
+
+        # --------------------------------------------------------
+        # RESPUESTA POSTSINAPTICA
+        # --------------------------------------------------------
+
+        act = (
+            self.nt /
+            (
+                0.28 +
+                self.nt +
+                1e-12
+            )
+        )
+
+        target = (
+            9 *
+            act
+        )
+
+        self.epsp += (
+            (
+                target -
+                self.epsp
+            )
+            /
+            0.18
+        ) * dt
+
+        # --------------------------------------------------------
+        # INDICE DE INESTABILIDAD
+        # --------------------------------------------------------
+        #
+        # NO es una escala de toxicidad real.
+        # Sirve para comparar estados dentro del modelo.
+        #
+
+        a = max(
+            0,
+            (
+                self.ca -
+                0.45
+            )
+            /
+            0.75
+        )
+
+        b = max(
+            0,
+            (
+                self.nt -
+                0.35
+            )
+            /
+            1.2
+        )
+
+        d = max(
+            0,
+            1 -
+            self.ves /
+            cap
+        )
+
+        self.instability = float(
+            np.clip(
+                55*a +
+                25*b +
+                35*d,
+                0,
+                100
+            )
+        )
+
+        # --------------------------------------------------------
+        # TIEMPO
+        # --------------------------------------------------------
+
+        self.t += dt
+
+        valores = [
+            ("t", self.t),
+            ("ca", self.ca),
+            ("nt", self.nt),
+            ("epsp", self.epsp),
+            ("release", self.release),
+            ("ves", self.ves),
+            ("ltx", l),
+            (
+                "instability",
+                self.instability
+            )
+        ]
+
+        for k, v in valores:
+            self.H[k].append(v)
+
+        # Maximo de historia
+        if len(
+            self.H["t"]
+        ) > 12000:
+
+            for k in self.H:
+
+                self.H[k] = (
+                    self.H[k][-12000:]
+                )
+
+    # ============================================================
+    # LOOP PRINCIPAL
+    # ============================================================
+
+    def loop(self):
+
+        if self.running:
+
+            dur = (
+                0.05 *
+                max(
+                    0.05,
+                    self.speed.get()
+                )
+            )
+
+            n = max(
+                1,
+                math.ceil(
+                    dur /
+                    self.dt
+                )
+            )
+
+            for _ in range(n):
+
+                self.step(
+                    dur /
+                    n
+                )
+
+            self.update_all()
+
+        self.root.after(
+            50,
+            self.loop
+        )
+
+    # ============================================================
+    # ACTUALIZACION VISUAL
+    # ============================================================
+
+    def update_all(self):
+
+        cap = max(
+            1,
+            self.pool.get()
+        )
+
+        frac = np.clip(
+            self.ves /
+            cap,
+            0,
+            1
+        )
+
+        n = int(
+            frac *
+            len(self.vx)
+        )
+
+        # Vesiculas
+        self.sves._offsets3d = (
+            self.vx[:n],
+            self.vy[:n],
+            self.vz[:n]
+        )
+
+        # Ca2+
+        nca = int(
+            np.clip(
+                18 +
+                self.ca *
+                90,
+                18,
+                140
+            )
+        )
+
+        cx = self.rng.uniform(
+            -0.45,
+            0.45,
+            nca
+        )
+
+        cy = self.rng.uniform(
+            -0.45,
+            0.45,
+            nca
+        )
+
+        cz = self.rng.uniform(
+            0.002,
+            0.07,
+            nca
+        )
+
+        self.sca._offsets3d = (
+            cx,
+            cy,
+            cz
+        )
+
+        # Neurotransmisor
+        nnt = int(
+            np.clip(
+                self.nt *
+                260,
+                0,
+                180
+            )
+        )
+
+        nx = np.clip(
+            self.rng.normal(
+                0,
+                0.23,
+                nnt
+            ),
+            -0.48,
+            0.48
+        )
+
+        ny = np.clip(
+            self.rng.normal(
+                0,
+                0.23,
+                nnt
+            ),
+            -0.48,
+            0.48
+        )
+
+        nz = self.rng.uniform(
+            -0.019,
+            -0.001,
+            nnt
+        )
+
+        self.snt._offsets3d = (
+            nx,
+            ny,
+            nz
+        )
+
+        # alpha-LTX
+        nl = int(
+            self.ltx.get() *
+            18
+        )
+
+        if nl:
+
+            a = np.linspace(
+                0,
+                2*np.pi,
+                nl,
+                endpoint=False
+            )
+
+            lx = (
+                0.32 *
+                np.cos(a)
+            )
+
+            ly = (
+                0.32 *
+                np.sin(a)
+            )
+
+            lz = np.full(
+                nl,
+                0.003
+            )
+
+        else:
+
+            lx = np.array([])
+            ly = np.array([])
+            lz = np.array([])
+
+        self.sltx._offsets3d = (
+            lx,
+            ly,
+            lz
+        )
+
+        self.info.set_text(
+            f"t={self.t:.2f}s\n"
+            f"alpha-LTX={self.ltx.get():.2f}\n"
+            f"Ca2+={self.ca:.3f} uM\n"
+            f"release={self.release:.1f} ves/s"
+        )
+
+        # --------------------------------------------------------
+        # GRAFICAS TEMPORALES
+        # --------------------------------------------------------
+
+        if self.H["t"]:
+
+            t = np.array(
+                self.H["t"]
+            )
+
+            ca = np.array(
+                self.H["ca"]
+            )
+
+            nt = np.array(
+                self.H["nt"]
+            )
+
+            rr = np.array(
+                self.H["release"]
+            )
+
+            self.lca.set_data(
+                t,
+                ca
+            )
+
+            self.lnt.set_data(
+                t,
+                nt
+            )
+
+            self.lrr.set_data(
+                t,
+                rr
+            )
+
+            x1 = max(
+                30,
+                self.t
+            )
+
+            x0 = max(
+                0,
+                x1 -
+                30
+            )
+
+            mask = (
+                t >= x0
+            )
+
+            self.ax.set_xlim(
+                x0,
+                x1
+            )
+
+            ymax = max(
+                np.max(
+                    ca[mask]
+                ),
+                np.max(
+                    nt[mask]
+                )
+            )
+
+            self.ax.set_ylim(
+                0,
+                max(
+                    0.5,
+                    float(ymax) *
+                    1.15
+                )
+            )
+
+            self.axr.set_ylim(
+                0,
+                max(
+                    10,
+                    float(
+                        np.max(
+                            rr[mask]
+                        )
+                    )
+                    *
+                    1.2
+                )
+            )
+
+        # --------------------------------------------------------
+        # METRICAS
+        # --------------------------------------------------------
+
+        self.metrics["ca"].set(
+            f"{self.ca:.3f} uM"
+        )
+
+        self.metrics["pr"].set(
+            f"{self.pr:.3f}"
+        )
+
+        self.metrics["rr"].set(
+            f"{self.release:.2f} ves/s"
+        )
+
+        self.metrics["nt"].set(
+            f"{self.nt:.3f} uM*"
+        )
+
+        self.metrics["epsp"].set(
+            f"{self.epsp:.3f} mV*"
+        )
+
+        self.metrics["ves"].set(
+            f"{self.ves:.0f}/{cap:.0f}"
+        )
+
+        self.metrics["total"].set(
+            f"{self.total_release:.1f}"
+        )
+
+        self.metrics["idx"].set(
+            f"{self.instability:.1f}/100*"
+        )
+
+        self.canvas.draw_idle()
+
+    # ============================================================
+    # CONTROLES
+    # ============================================================
+
+    def toggle(self):
+
+        self.running = (
+            not
+            self.running
+        )
+
+        self.runbtn.config(
+            text=(
+                "Pausar"
+                if self.running
+                else
+                "Iniciar"
+            )
+        )
+
+        self.log(
+            "Simulacion iniciada."
+            if self.running
+            else
+            "Simulacion pausada."
+        )
+
+    def inject(self):
+
+        old = self.ltx.get()
+
+        self.ltx.set(
+            min(
+                1,
+                old +
+                0.25
+            )
+        )
+
+        self.log(
+            f"alpha-LTX virtual: "
+            f"{old:.2f} -> "
+            f"{self.ltx.get():.2f}"
+        )
+
+        self.update_all()
+
+    def washout(self):
+
+        self.ltx.set(
+            0
+        )
+
+        self.log(
+            "Washout virtual aplicado."
+        )
+
+        self.update_all()
+
+    # ============================================================
+    # PRESETS
+    # ============================================================
+
+    def apply_preset(self):
+
+        p = self.preset.get()
+
+        data = {
+
+            "Basal":
+                (
+                    10,
+                    2,
+                    1,
+                    0,
+                    1,
+                    200,
+                    4
+                ),
+
+            "Estimulo 25 Hz":
+                (
+                    25,
+                    2,
+                    1,
+                    0,
+                    1,
+                    200,
+                    4
+                ),
+
+            "alpha-LTX moderada":
+                (
+                    10,
+                    2,
+                    1,
+                    0.35,
+                    1,
+                    200,
+                    4
+                ),
+
+            "alpha-LTX intensa":
+                (
+                    10,
+                    2,
+                    1,
+                    0.8,
+                    1,
+                    200,
+                    4
+                ),
+
+            "Washout":
+                (
+                    5,
+                    2,
+                    1,
+                    0,
+                    1,
+                    200,
+                    3
+                )
+        }[p]
+
+        variables = [
+            self.stim,
+            self.ca_ext,
+            self.cav,
+            self.ltx,
+            self.exo,
+            self.pool,
+            self.recycle
+        ]
+
+        for v, x in zip(
+            variables,
+            data
+        ):
+
+            v.set(x)
+
+        self.ves = min(
+            self.ves,
+            self.pool.get()
+        )
+
+        self.log(
+            "Preset: " +
+            p
+        )
+
+        self.update_all()
+
+    # ============================================================
+    # RESET
+    # ============================================================
+
+    def reset(self):
+
+        self.running = False
+
+        if hasattr(
+            self,
+            "runbtn"
+        ):
+
+            self.runbtn.config(
+                text="Iniciar"
+            )
+
+        self.t = 0
+        self.ca = 0.08
+        self.nt = 0
+        self.epsp = 0
+        self.release = 0
+        self.pr = 0
+        self.total_release = 0
+        self.instability = 0
+        self.ves = self.pool.get()
+
+        for k in self.H:
+
+            self.H[k].clear()
+
+        if hasattr(
+            self,
+            "canvas"
+        ):
+
+            self.update_all()
+
+    # ============================================================
+    # EXPORTACION
+    # ============================================================
+
+    def export_csv(self):
+
+        if not self.H["t"]:
+
+            messagebox.showinfo(
+                "MainLab",
+                "Aun no hay datos "
+                "para exportar."
+            )
+
+            return
+
+        p = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[
+                (
+                    "CSV",
+                    "*.csv"
+                )
+            ],
+            initialfile="mainlab_experiment.csv"
+        )
+
+        if not p:
+            return
+
+        with open(
+            p,
+            "w",
+            newline="",
+            encoding="utf-8"
+        ) as f:
+
+            w = csv.writer(f)
+
+            w.writerow(
+                [
+                    "time_s",
+                    "ca_uM",
+                    "nt_model_uM",
+                    "epsp_model_mV",
+                    "release_ves_s",
+                    "vesicles_ready",
+                    "alpha_ltx_virtual",
+                    "instability_model"
+                ]
+            )
+
+            w.writerows(
+                zip(
+                    *[
+                        self.H[k]
+                        for k in [
+                            "t",
+                            "ca",
+                            "nt",
+                            "epsp",
+                            "release",
+                            "ves",
+                            "ltx",
+                            "instability"
+                        ]
+                    ]
+                )
+            )
+
+        self.log(
+            "CSV exportado: " +
+            p
+        )
+
+    # ============================================================
+    # LOG
+    # ============================================================
+
+    def log(
+        self,
+        msg
+    ):
+
+        if not hasattr(
+            self,
+            "status"
+        ):
+
+            return
+
+        self.status.insert(
+            "end",
+            f"[{self.t:7.2f}s] "
+            f"{msg}\n"
+        )
+
+        self.status.see(
+            "end"
+        )
+
+
+# ================================================================
+# EJECUCION
+# ================================================================
+
+if __name__ == "__main__":
+
+    root = tk.Tk()
+
+    app = mainlab(
+        root
+    )
+
+    root.mainloop()
